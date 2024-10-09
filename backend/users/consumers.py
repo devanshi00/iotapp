@@ -17,6 +17,9 @@ from django.conf import settings
 User = get_user_model()
 
 class VitalDataConsumer(AsyncWebsocketConsumer):
+    def __init__(self):
+        super().__init__()
+        self.data_queue = asyncio.Queue()
 
     async def connect(self):
         self.user = None
@@ -53,72 +56,65 @@ class VitalDataConsumer(AsyncWebsocketConsumer):
         await self.poll_hardware_for_vital(message_type)
 
     async def poll_hardware_for_vital(self, message_type):
-        """
-        Poll the hardware for vital data, sending updates every 2 seconds.
-        If the status is 'Calculating' for 6 seconds, send 'Place your Finger Properly'
-        and repeat this cycle until the result is 'Success' or timeout after 60 seconds.
-        """
+        """Poll the hardware for vital data (temperature) and send status updates every 2 seconds."""
         result_received = False
-        calculating_time = 0
-        max_time = 60  # 60 seconds timeout
+        max_time = 90  # 90 seconds timeout after hardware is connected
         start_time = time.time()
+
+        # Publish the message to the hardware once
+        await self.send_status("Preparing to publish message...")
+        client.publish(client_publish_topic, payload=message_type, qos=2)
+        await self.send_status("Message published, waiting for hardware response...")
+
+        # client.publish(client_publish_topic, payload=message_type, qos=2)
+        # await self.send_status("Message published, waiting for hardware response...")
         
+        # Poll for 90 seconds, sending status updates every 2 seconds
         while not result_received and (time.time() - start_time) < max_time:
-            # Send the initial request to the hardware
-            # await self.send_status("Requesting vital data from hardware...")
-            client.publish(client_publish_topic, payload=message_type, qos=2)
+            # Wait for hardware response or for 2 seconds
+            data=""
+            self.wait_for_response()
 
-            # Simulate waiting for hardware response
-            await self.wait_for_response()
+            # Send status update every 2 seconds while waiting for response
+            await self.send_status("Polling hardware...")
 
-            # Simulate getting the response from hardware
-            hardware_response = data  # The response from the hardware
-            
-            try:
-                response_json = json.loads(hardware_response)
-                status = response_json.get("Status")
-                heart_rate = response_json.get("Heart_Rate")
-                spo2_value = response_json.get("SPO2")
-                result = response_json.get("Result")
+            # Check if a response has been received
+            hardware_response = data  # `data` should be updated from some external event or callback
+            if hardware_response:  # If response is not None, process it
+                try:
+                    response_json = json.loads(hardware_response)
+                    status = response_json.get("Status")
+                    temperature = response_json.get("Temperature")
+                    result = response_json.get("Result")
 
-                # Send status to the frontend every 2 seconds
-                if status == "Calculating":
-                    calculating_time += 2  # Increment the 'Calculating' time by 2 seconds
-
-                    # If calculating time exceeds 6 seconds, send "Place your Finger Properly"
-                    if calculating_time >= 6:
+                    if result == "retry":
                         await self.send_status("Place your Finger Properly")
-                        calculating_time = 0
-                        await asyncio.sleep(2)
+                    elif status == "Reading Complete":
+                        await self.send_status(f"{temperature} °C, {status}")
+                        await self.save_vital_data(temperature)
+                        result_received = True
                     else:
-                        await self.send_status(f"Status: {status}, SPO2: {spo2_value}%, Heart Rate: {heart_rate} bpm")
-                # else:
-                #     # Reset calculating time if status changes
-                #     calculating_time = 0
-                #     await self.send_status(f"Status: {status}, SPO2: {spo2_value}%, Heart Rate: {heart_rate} bpm")
+                        await self.send_status(f"{status}")
 
-                if status == "Calculated" and result == "Success":
-                    # If the result is successful, send the result and break the loop
-                    await self.send_result(spo2_value, heart_rate)
-                    await self.save_vital_data(spo2_value, heart_rate)
-                    result_received = True
-                # else:
-                #     await asyncio.sleep(2)
-
-            except json.JSONDecodeError:
-                await self.send_status("Invalid response from hardware")
-                result_received = True
+                except json.JSONDecodeError:
+                    await self.send_status("Invalid response from hardware")
+                break  # Exit the while-loop since a response has been received
 
         if not result_received:
-            await self.send_status("Timeout: Failed to retrieve vital data within 60 seconds.")
+            await self.send_status("Request timeout. Failed to retrieve vital data.")
 
     async def wait_for_response(self):
-        """ Wait for the MQTT response to come in from the hardware. """
-        global  data
-        # message_received = False
-        # while not message_received:
+        """Wait for the MQTT response to come in from the hardware."""
+        global data
         client.on_message = on_message
-        await asyncio.sleep(1)  # Sleep for 1 second until the message is received
+
+        # Wait until data is populated
+        while data is None:
+            await asyncio.sleep(1)  # Sleep for 1 second
+        
+        # Data is received, now you can process it or return
+        return data  # Optionally return data if needed
+
 
     async def send_status(self, message):
         """ Send the status message back to the frontend. """
@@ -126,15 +122,9 @@ class VitalDataConsumer(AsyncWebsocketConsumer):
             "status": message
         }))
 
-    async def send_result(self, spo2_value, heart_rate):
-        """ Send the final result (SPO2 and heart rate) back to the frontend. """
-        await self.send(text_data=json.dumps({
-            "result": f"SPO2: {spo2_value}%, Heart Rate: {heart_rate} bpm"
-        }))
-
     @sync_to_async
-    def save_vital_data(self, spo2_value, heart_rate):
-        """ Save the vital data (SPO2 and heart rate) to the database. """
+    def save_vital_data(self, temperature):
+        """ Save the temperature data to the database. """
         user = self.user
         role = self.role
 
@@ -143,7 +133,7 @@ class VitalDataConsumer(AsyncWebsocketConsumer):
 
             # Create and store the DoctorData instance associated with the profile
             doctor_data = DoctorData(
-                doctor=profile, spo2=spo2_value, heart_rate=heart_rate,
+                doctor=profile, temperature=Decimal(temperature),
                 created_at=timezone.now()
             )
             doctor_data.save()
@@ -153,7 +143,7 @@ class VitalDataConsumer(AsyncWebsocketConsumer):
 
             # Create and store the PatientData instance associated with the profile
             patient_data = PatientData(
-                patient=profile, spo2=spo2_value, heart_rate=heart_rate,
+                patient=profile, temperature=Decimal(temperature),
                 created_at=timezone.now()
             )
             patient_data.save()
@@ -175,7 +165,6 @@ class VitalDataConsumer(AsyncWebsocketConsumer):
     def get_user_role(self):
         """ 
         Get the role of the user (doctor or patient) based on the profile associated with the user.
-        Since this involves a database lookup, it is wrapped with `sync_to_async`.
         """
         if hasattr(self.user, 'doctorprofile'):
             return "doctor"
