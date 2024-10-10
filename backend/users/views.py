@@ -51,7 +51,7 @@ from .serializers import (
     PatientDataSerializer,
     DoctorDataSerializer,
 )
-from users.mqtt_client import client,message_received,data
+# from users.mqtt_client import client,message_received,data
 
 # # Accessing the global variable from manage.py
 # from manage import data, message_received
@@ -261,39 +261,39 @@ class PatientProfileListView(APIView):
 # import json
 # from users.mqtt_client import client, message_received, client_publish_topic  # Correct import
 
-client_publish_base_topic = "HK_Sub"
-client_subscribe_base_topic = "HK_Pub"
+# client_publish_base_topic = "HK_Sub"
+# client_subscribe_base_topic = "HK_Pub"
 
-def on_message(client, userdata, msg):
-    # print("Received message: ", msg.payload.decode().strip())
-    global message_received , data
-    message_received = True
-    data = msg.payload.decode().strip()
-    return data
+# # def on_message(client, userdata, msg):
+# #     # print("Received message: ", msg.payload.decode().strip())
+# #     global message_received , data
+# #     message_received = True
+# #     data = msg.payload.decode().strip()
+# #     return data
 
-class DeviceIdView(APIView):
-    permission_classes = [IsAuthenticated]
+# # class DeviceIdView(APIView):
+#     permission_classes = [IsAuthenticated]
 
-    def post(self, request):
-        global client_publish_topic, client_subscribe_topic
+    # def post(self, request):
+    #     global client_publish_topic, client_subscribe_topic
 
-        # Extract device_id from request data
-        device_id = request.data.get("device_id")
-        if not device_id:
-            return Response({"error": "Device ID is required"}, status=status.HTTP_400_BAD_REQUEST)
+    #     # Extract device_id from request data
+    #     device_id = request.data.get("device_id")
+    #     if not device_id:
+    #         return Response({"error": "Device ID is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Set MQTT topics based on device ID
-        client_publish_topic = f"HK_Sub{device_id}"
-        client_subscribe_topic = f"HK_Pub{device_id}"
+    #     # Set MQTT topics based on device ID
+    #     client_publish_topic = f"HK_Sub{device_id}"
+    #     client_subscribe_topic = f"HK_Pub{device_id}"
 
-        # Subscribe to the new topic
-        client.subscribe(client_subscribe_topic)
+    #     # Subscribe to the new topic
+    #     client.subscribe(client_subscribe_topic)
 
-        return Response({
-            "message": f"Topics set for device ID {device_id}",
-            "subscribe_topic": client_subscribe_topic,
-            "publish_topic": client_publish_topic
-        }, status=status.HTTP_200_OK)
+    #     return Response({
+    #         "message": f"Topics set for device ID {device_id}",
+    #         "subscribe_topic": client_subscribe_topic,
+    #         "publish_topic": client_publish_topic
+    #     }, status=status.HTTP_200_OK)
     
 # class VitalsDataView(APIView):
 #     permission_classes = [IsAuthenticated]

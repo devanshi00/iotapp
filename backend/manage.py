@@ -2,7 +2,7 @@
 import os
 import sys
 import threading
-from users.mqtt_client import setup_mqtt_client
+# from users.mqtt_client import setup_mqtt_client
 
 # def run_mqtt_client():
 #     """Run the MQTT client in a separate thread."""
