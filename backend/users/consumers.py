@@ -4,8 +4,8 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 import asyncio
 from django.utils import timezone
 from decimal import Decimal
-from .models import DoctorData, PatientData, PatientProfile, DoctorProfile
-from .serializers import DoctorDataSerializer, PatientDataSerializer
+# from .models import DoctorData, PatientData, PatientProfile, DoctorProfile
+# from .serializers import DoctorDataSerializer, PatientDataSerializer
 from asgiref.sync import sync_to_async
 from users.mqtt_client import client, message_received, data, client_publish_topic, on_message
 from rest_framework_simplejwt.tokens import UntypedToken
@@ -19,7 +19,6 @@ User = get_user_model()
 class VitalDataConsumer(AsyncWebsocketConsumer):
     def __init__(self):
         super().__init__()
-        self.data_queue = asyncio.Queue()
 
     async def connect(self):
         self.user = None
@@ -36,8 +35,13 @@ class VitalDataConsumer(AsyncWebsocketConsumer):
                 self.role = await self.get_user_role()  # Check for role asynchronously
                 await self.accept()
                 await self.send(text_data=json.dumps({'status': 'connected', 'user': str(self.user), 'role': self.role}))
-            else:
-                await self.close()
+                
+                # Join the sensor-specific group (room)
+                self.room_group_name = f"TEMP-001"
+                await self.channel_layer.group_add(
+                    self.room_group_name,
+                    self.channel_name
+                )
 
         except InvalidToken:
             await self.send(text_data=json.dumps({'error': 'Invalid token'}))
@@ -45,111 +49,52 @@ class VitalDataConsumer(AsyncWebsocketConsumer):
 
     async def disconnect(self, close_code):
         """ Handle WebSocket disconnection. """
-        pass  # No special action needed on disconnect
+        await self.channel_layer.group_discard(
+            self.room_group_name,
+            self.channel_name
+        )
 
     async def receive(self, text_data):
         """ Handle messages received via WebSocket. """
         text_data_json = json.loads(text_data)
         message_type = text_data_json.get("message")
+        await self.send(text_data=json.dumps({"message": message_type}))
 
-        # Start polling the hardware every 2 seconds
-        await self.poll_hardware_for_vital(message_type)
+    async def sensor_created(self, event):
+        """ Handle sensor.created messages sent from the signal. """
+        sensor_id = event['sensor_id']
+        name = event['name']
 
-    async def poll_hardware_for_vital(self, message_type):
-        """Poll the hardware for vital data (temperature) and send status updates every 2 seconds."""
-        result_received = False
-        max_time = 90  # 90 seconds timeout after hardware is connected
-        start_time = time.time()
-
-        # Publish the message to the hardware once
-        await self.send_status("Preparing to publish message...")
-        client.publish(client_publish_topic, payload=message_type, qos=2)
-        await self.send_status("Message published, waiting for hardware response...")
-
-        # client.publish(client_publish_topic, payload=message_type, qos=2)
-        # await self.send_status("Message published, waiting for hardware response...")
-        
-        # Poll for 90 seconds, sending status updates every 2 seconds
-        while not result_received and (time.time() - start_time) < max_time:
-            # Wait for hardware response or for 2 seconds
-            data=""
-            self.wait_for_response()
-
-            # Send status update every 2 seconds while waiting for response
-            await self.send_status("Polling hardware...")
-
-            # Check if a response has been received
-            hardware_response = data  # `data` should be updated from some external event or callback
-            if hardware_response:  # If response is not None, process it
-                try:
-                    response_json = json.loads(hardware_response)
-                    status = response_json.get("Status")
-                    temperature = response_json.get("Temperature")
-                    result = response_json.get("Result")
-
-                    if result == "retry":
-                        await self.send_status("Place your Finger Properly")
-                    elif status == "Reading Complete":
-                        await self.send_status(f"{temperature} °C, {status}")
-                        await self.save_vital_data(temperature)
-                        result_received = True
-                    else:
-                        await self.send_status(f"{status}")
-
-                except json.JSONDecodeError:
-                    await self.send_status("Invalid response from hardware")
-                break  # Exit the while-loop since a response has been received
-
-        if not result_received:
-            await self.send_status("Request timeout. Failed to retrieve vital data.")
-
-    async def wait_for_response(self):
-        """Wait for the MQTT response to come in from the hardware."""
-        global data
-        client.on_message = on_message
-
-        # Wait until data is populated
-        while data is None:
-            await asyncio.sleep(1)  # Sleep for 1 second
-        
-        # Data is received, now you can process it or return
-        return data  # Optionally return data if needed
-
-
-    async def send_status(self, message):
-        """ Send the status message back to the frontend. """
+        # Send the sensor created message to WebSocket
         await self.send(text_data=json.dumps({
-            "status": message
+            'type': 'sensor.created',
+            'sensor_id': sensor_id,
+            'name': name,
         }))
 
-    @sync_to_async
-    def save_vital_data(self, temperature):
-        """ Save the temperature data to the database. """
-        user = self.user
-        role = self.role
+    async def measurement_created(self, event):
+        """ Handle measurement.created messages sent from the signal. """
+        sensor_id = event['sensor_id']
+        value = event['value']
+        timestamp = event['timestamp']
 
-        if role == "doctor":
-            profile = DoctorProfile.objects.get(user=user)
+        # Send the sensor measurement message to WebSocket
+        await self.send(text_data=json.dumps({
+            'type': 'measurement.created',
+            'sensor_id': sensor_id,
+            'value': value,
+            'timestamp': timestamp,
+        }))
 
-            # Create and store the DoctorData instance associated with the profile
-            doctor_data = DoctorData(
-                doctor=profile, temperature=Decimal(temperature),
-                created_at=timezone.now()
-            )
-            doctor_data.save()
+    async def sensor_deleted(self, event):
+        """ Handle sensor.deleted messages sent from the signal. """
+        sensor_id = event['sensor_id']
 
-        elif role == "patient":
-            profile = PatientProfile.objects.get(user=user)
-
-            # Create and store the PatientData instance associated with the profile
-            patient_data = PatientData(
-                patient=profile, temperature=Decimal(temperature),
-                created_at=timezone.now()
-            )
-            patient_data.save()
-
-        else:
-            raise ValueError("Unknown user role")
+        # Send the sensor deleted message to WebSocket
+        await self.send(text_data=json.dumps({
+            'type': 'sensor.deleted',
+            'sensor_id': sensor_id,
+        }))
 
     @sync_to_async
     def get_validated_token(self, token):
@@ -163,9 +108,7 @@ class VitalDataConsumer(AsyncWebsocketConsumer):
 
     @sync_to_async
     def get_user_role(self):
-        """ 
-        Get the role of the user (doctor or patient) based on the profile associated with the user.
-        """
+        """ Get the role of the user (doctor or patient). """
         if hasattr(self.user, 'doctorprofile'):
             return "doctor"
         elif hasattr(self.user, 'patientprofile'):

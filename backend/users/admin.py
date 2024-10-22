@@ -1,7 +1,7 @@
 # admin.py
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import CustomUser, PatientProfile, DoctorProfile,PatientData,DoctorData
+from .models import CustomUser, PatientProfile, DoctorProfile,Sensor, SensorMeasurement
 
 
 class UserAdmin(BaseUserAdmin):
@@ -45,5 +45,5 @@ class UserAdmin(BaseUserAdmin):
 admin.site.register(CustomUser, UserAdmin)
 admin.site.register(PatientProfile)
 admin.site.register(DoctorProfile)
-admin.site.register(PatientData)
-admin.site.register(DoctorData)
+admin.site.register(Sensor)
+admin.site.register(SensorMeasurement)
