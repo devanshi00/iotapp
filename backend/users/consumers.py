@@ -1,210 +1,207 @@
 import json
-import time
 from channels.generic.websocket import AsyncWebsocketConsumer
-import asyncio
-from django.utils import timezone
+from asgiref.sync import sync_to_async
 from decimal import Decimal
+from django.utils import timezone
 from .models import DoctorData, PatientData
-# from .serializers import DoctorDataSerializer, PatientDataSerializer
-from asgiref.sync import sync_to_async, async_to_sync
-from users.mqtt_client import client,client_publish_topic
+from users.mqtt_client import setup_mqtt_client
 from rest_framework_simplejwt.tokens import UntypedToken
-from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+from rest_framework_simplejwt.exceptions import InvalidToken
 from django.contrib.auth import get_user_model
-from channels.db import database_sync_to_async
-from django.conf import settings
-
+subject_group_mapping = {
+    "Hardware Configuration": "hardware_group_",
+    "Glucose": "glucose_group_",
+    "Temperature": "temperature_group_",
+    "Oximeter": "oximeter_group_"
+}
 User = get_user_model()
-# class MQTTTopicConsumer(AsyncWebsocketConsumer):
-#     def __init__(self):
-#         super().__init__()
-        
 
-#     async def connect(self):
-#         # This method is called when the WebSocket connection is opened
-#         self.user = None
-        
-#         # Retrieve JWT token from the headers (optional, you can add authentication here if needed)
-#         # token = self.scope['query_string'].decode().split('=')[-1]  # assuming 'token=<JWT>'
-#         await self.accept()
-        
-#         # Send an initial message to confirm the WebSocket connection
-#         await self.send(text_data=json.dumps({'status': 'connected'}))
-
-#     async def disconnect(self, close_code):
-#         # This method is called when the WebSocket connection is closed
-#         pass
-
-#     async def receive(self, text_data):
-#         """ Handle messages received via WebSocket for subscribing and publishing topics. """
-#         text_data_json = json.loads(text_data)
-        
-#         # Extract message type, device_id for Subscribe or Publish action
-#         message_type = text_data_json.get("message")
-        
-#         if message_type == "Subscribe":
-#             # Set the subscribe topic based on the device_id
-#             device_id = text_data_json.get("device_id")
-            
-#             if not device_id:
-#                 await self.send(text_data=json.dumps({"error": "device_id is missing"}))
-#                 return
-            
-#             # Dynamically create and set the MQTT subscribe topic based on the device_id
-#             client_subscribe_topic = f"HK_Pub{device_id}"
-            
-#             # Subscribe to the topic (async call to client.subscribe)
-#             client.subscribe(client_subscribe_topic)
-            
-#             # Send a confirmation back to the frontend
-#             await self.send(text_data=json.dumps({
-#                 'status': 'Subscribed to topic',
-#                 'subscribe_topic': client_subscribe_topic
-#             }))
-
-            
-#             # Dynamically create and set the MQTT publish topic based on the device_id
-#             client_publish_topic = f"HK_Sub{device_id}"
-            
-#         else:
-#             await self.send(text_data=json.dumps({
-#                 'error': 'Invalid message type'
-#             }))
-
-    
 
 class VitalDataConsumer(AsyncWebsocketConsumer):
     def __init__(self):
         super().__init__()
-       
+        self.device_id = None
+        self.mqtt_client = None
 
     async def connect(self):
-        self.user = None
+        token = self.scope['query_string'].decode().split('=')[-1]  # Extract token
+        self.device_id = self.scope['query_string'].decode().split('&')[0].split('=')[-1]  # Extract device_id
 
-        # Retrieve JWT token from the headers
-        token = self.scope['query_string'].decode().split('=')[-1]  # assuming 'token=<JWT>'
-        
-        # Authenticate the user using JWT
         try:
             validated_token = await self.get_validated_token(token)
             self.user = await self.get_user_from_token(validated_token)
 
             if self.user.is_authenticated:
-                self.role = await self.get_user_role()  # Check for role asynchronously
+                self.role = await self.get_user_role()
                 await self.accept()
                 await self.send(text_data=json.dumps({'status': 'connected', 'user': str(self.user), 'role': self.role}))
-                
-                # Join the sensor-specific group (room)
-                await self.channel_layer.group_add(
-                "temperature_group",  # Same group as in the MQTT callback
-                 self.channel_name
-              )
-                # await self.accept()
 
+                # Add the consumer to all subject groups based on the device_id
+                for subject, group_prefix in subject_group_mapping.items():
+                    group_name = f"{group_prefix}{self.device_id}"
+                    await self.channel_layer.group_add(group_name, self.channel_name)
+                    # await self.send(text_data=json.dumps({'status': f'Joined group {group_name}'}))
 
+                # Set up the MQTT client with the dynamic device_id
+                self.mqtt_client = setup_mqtt_client(self.device_id)
 
         except InvalidToken:
             await self.send(text_data=json.dumps({'error': 'Invalid token'}))
             await self.close()
 
     async def disconnect(self, close_code):
-        """ Handle WebSocket disconnection. """
-        await self.channel_layer.group_discard(
-            self.room_group_name,
-            self.channel_name
-        )
+     if self.device_id:
+        for subject, group_prefix in subject_group_mapping.items():
+            group_name = f"{group_prefix}{self.device_id}"
+            await self.channel_layer.group_discard(group_name, self.channel_name)
+
 
     async def receive(self, text_data):
-        """ Handle messages received via WebSocket. """
+        """Handle WebSocket messages for subscribing/publishing topics."""
         text_data_json = json.loads(text_data)
-        
-        # Extract message type and device_id (for Subscribe) or topic (for Publish)
         message_type = text_data_json.get("message")
-        
-        
+     
+        if message_type:
             
-        # Publish the data to the specified topic
-        client.publish(client_publish_topic,payload=message_type)
-          
-        
-        if not message_type:
-            await self.send(text_data=json.dumps({
-                'error': 'Invalid message type'
-            }))
-
-        # Optionally, send a confirmation back to the frontend
-        
-
-
-
-
+            # Publish the data to the dynamic MQTT topic based on device_id
+            self.mqtt_client.publish(f"HK_Sub{self.device_id}", payload=message_type)
+        else:
+            await self.send(text_data=json.dumps({'error': 'Invalid message type'}))
+    
     async def temperature_message(self, event):
-        """ Handle messages received in the temperature group. """
+        """Handle temperature messages received in the temperature group."""
         message = event['message']
-        
-        # Parse the message (assuming JSON format)
         message_data = json.loads(message)
-        
-        # Check if the message contains both 'Status' and 'Temperature'
+
         status = message_data.get("Status")
         temperature = message_data.get("Temperature")
-        
-        if status and temperature:
-            # Send only the Status to the frontend
-            await self.send(text_data=json.dumps({
-                'Status': status
-            }))
-            
-            # Save the temperature to the database based on the user role
-            await self.save_temperature_to_db(temperature)
 
+        if status and temperature:
+            await self.send(text_data=json.dumps({'Status': status}))
+            await self.save_temperature_to_db(temperature)
         else:
-            # If the message doesn't contain a Temperature, send the entire message to the frontend
             await self.send(text_data=json.dumps(message_data))
+
+    async def oximeter_message(self, event):
+        """Handle temperature messages received in the temperature group."""
+        message = event['message']
+        message_data = json.loads(message)
+
+        status = message_data.get("Status")
+        heart_rate= message_data.get("Heart_Rate")
+        spo2 = message_data.get("SPO2")
+
+        if status and heart_rate and spo2:
+            await self.send(text_data=json.dumps({'Status': status}))
+            await self.save_oximeter_to_db(heart_rate,spo2)
+        else:
+            await self.send(text_data=json.dumps(message_data))
+    
+    async def hardware_message(self, event):
+        """Handle temperature messages received in the temperature group."""
+        message = event['message']
+        message_data = json.loads(message)
+
+        status = message_data.get("Status")
+        # temperature = message_data.get("Temperature")
+
+        # if status and temperature:
+        await self.send(text_data=json.dumps({'Status': status}))
+        #     await self.save_temperature_to_db(temperature)
+        # else:
+        # await self.send(text_data=json.dumps(m))
+    
+    async def glucose_message(self, event):
+        """Handle temperature messages received in the temperature group."""
+        message = event['message']
+        message_data = json.loads(message)
+        glucose=message_data['Glucose']
+        samples=message_data['Samples']
+        await self.send(text_data=json.dumps(message_data))
+        await self.save_glucose_to_db(glucose,samples)
 
 
     @sync_to_async
     def save_temperature_to_db(self, temperature):
-        """ Save or update temperature based on user role (doctor or patient). """
+        """Save temperature data to the database based on the user role."""
         if self.role == 'doctor':
-            # Get the doctor's profile
             doctor_profile = self.user.doctorprofile
-            
-            # Check if a record exists for this doctor, if so, update it; otherwise, create a new one
             doctor_data, created = DoctorData.objects.get_or_create(
                 doctor=doctor_profile,
                 defaults={'temperature': Decimal(temperature), 'created_at': timezone.now()}
             )
-            if not created:  # If it already existed, update the temperature
+            if not created:
                 doctor_data.temperature = Decimal(temperature)
                 doctor_data.save()
-
         elif self.role == 'patient':
-            # Get the patient's profile
             patient_profile = self.user.patientprofile
-            
-            # Check if a record exists for this patient, if so, update it; otherwise, create a new one
             patient_data, created = PatientData.objects.get_or_create(
                 patient=patient_profile,
                 defaults={'temperature': Decimal(temperature), 'created_at': timezone.now()}
             )
-            if not created:  # If it already existed, update the temperature
+            if not created:
                 patient_data.temperature = Decimal(temperature)
                 patient_data.save()
 
     @sync_to_async
+    def save_glucose_to_db(self, glucose_level, samples):
+        """Save glucose level and samples data to the database."""
+        if self.role == 'doctor':
+            doctor_profile = self.user.doctorprofile
+            doctor_data, created = DoctorData.objects.get_or_create(
+                doctor=doctor_profile,
+                defaults={'glucose_level': Decimal(glucose_level), 'glucose_samples': samples, 'created_at': timezone.now()}
+            )
+            if not created:
+                doctor_data.glucose_level = Decimal(glucose_level)
+                doctor_data.glucose_samples = samples  # Update the samples array
+                doctor_data.save()
+        elif self.role == 'patient':
+            patient_profile = self.user.patientprofile
+            patient_data, created = PatientData.objects.get_or_create(
+                patient=patient_profile,
+                defaults={'glucose_level': Decimal(glucose_level), 'glucose_samples': samples, 'created_at': timezone.now()}
+            )
+            if not created:
+                patient_data.glucose_level = Decimal(glucose_level)
+                patient_data.glucose_samples = samples  # Update the samples array
+                patient_data.save()
+
+    @sync_to_async
+    def save_oximeter_to_db(self, heart_rate, spo2):
+        """Save oximeter (heart rate and oxygen level) data to the database."""
+        if self.role == 'doctor':
+            doctor_profile = self.user.doctorprofile
+            doctor_data, created = DoctorData.objects.get_or_create(
+                doctor=doctor_profile,
+                defaults={'heart_rate': Decimal(heart_rate), 'spo2': Decimal(spo2), 'created_at': timezone.now()}
+            )
+            if not created:
+                doctor_data.heart_rate = Decimal(heart_rate)
+                doctor_data.spo2 = Decimal(spo2)
+                doctor_data.save()
+        elif self.role == 'patient':
+            patient_profile = self.user.patientprofile
+            patient_data, created = PatientData.objects.get_or_create(
+                patient=patient_profile,
+                defaults={'heart_rate': Decimal(heart_rate), 'spo2': Decimal(spo2), 'created_at': timezone.now()}
+            )
+            if not created:
+                patient_data.heart_rate = Decimal(heart_rate)
+                patient_data.spo2 = Decimal(spo2)
+                patient_data.save()
+
+
+    @sync_to_async
     def get_validated_token(self, token):
-        """ Validate the JWT token. """
         return UntypedToken(token)
 
     @sync_to_async
     def get_user_from_token(self, validated_token):
-        """ Retrieve the user based on the validated JWT token. """
         return User.objects.get(id=validated_token['user_id'])
 
     @sync_to_async
     def get_user_role(self):
-        """ Get the role of the user (doctor or patient). """
         if hasattr(self.user, 'doctorprofile'):
             return "doctor"
         elif hasattr(self.user, 'patientprofile'):

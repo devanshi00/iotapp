@@ -118,16 +118,22 @@ def delete_user_profile(sender, instance, **kwargs):
             pass  # If profile doesn't exist, no action needed
 
 
-class PatientData(models.Model):
-    patient = models.ForeignKey(PatientProfile, on_delete=models.CASCADE, related_name="vitals")
-    created_at = models.DateTimeField(auto_now_add=True)  # Timestamp for when the vital was recorded
-    heart_rate = models.PositiveIntegerField(null=True, blank=True) 
-    temperature = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)   
-    spo2 = models.PositiveIntegerField(null=True,blank=True)
-
 class DoctorData(models.Model):
     doctor = models.ForeignKey(DoctorProfile, on_delete=models.CASCADE, related_name="vitals")
-    created_at = models.DateTimeField(auto_now_add=True)  # Timestamp for when the vital was recorded
-    heart_rate = models.PositiveIntegerField(null=True, blank=True) 
-    temperature = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True) 
-    spo2 = models.PositiveIntegerField(null=True,blank=True)
+    temperature = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    glucose_level = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    glucose_samples = models.JSONField(null=True, blank=True)  # Store samples as JSON
+    oxygen_level = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    heart_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    spo2 = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+class PatientData(models.Model):
+    patient = models.ForeignKey(PatientProfile, on_delete=models.CASCADE, related_name="vitals")
+    temperature = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    glucose_level = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    glucose_samples = models.JSONField(null=True, blank=True)  # Store samples as JSON
+    oxygen_level = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    heart_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    spo2 = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
