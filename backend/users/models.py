@@ -137,3 +137,24 @@ class PatientData(models.Model):
     heart_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     spo2 = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+class VitalHistoryPatient(models.Model):
+    patient = models.ForeignKey(PatientProfile, on_delete=models.CASCADE, related_name="vital_history")
+    temperature = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    glucose_level = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    glucose_samples = models.JSONField(null=True, blank=True)
+    oxygen_level = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    heart_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    spo2 = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+class VitalHistoryDoctor(models.Model):
+    doctor = models.ForeignKey(DoctorProfile, on_delete=models.CASCADE, related_name="vital_history")
+    temperature = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    glucose_level = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    glucose_samples = models.JSONField(null=True, blank=True)
+    oxygen_level = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    heart_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    spo2 = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    recorded_at = models.DateTimeField(auto_now_add=True)
+

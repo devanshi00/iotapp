@@ -3,7 +3,8 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from asgiref.sync import sync_to_async
 from decimal import Decimal
 from django.utils import timezone
-from .models import DoctorData, PatientData
+from channels.exceptions import DenyConnection
+from .models import DoctorData, PatientData,VitalHistoryPatient,VitalHistoryDoctor
 from users.mqtt_client import setup_mqtt_client
 from rest_framework_simplejwt.tokens import UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken
@@ -16,6 +17,7 @@ subject_group_mapping = {
 }
 User = get_user_model()
 
+active_device_connections = {}
 
 class VitalDataConsumer(AsyncWebsocketConsumer):
     def __init__(self):
@@ -33,6 +35,16 @@ class VitalDataConsumer(AsyncWebsocketConsumer):
 
             if self.user.is_authenticated:
                 self.role = await self.get_user_role()
+
+                # Check if the device ID is already in use
+                if self.device_id in active_device_connections:
+                    # If the device is already in use, deny the connection
+                    await self.send(text_data=json.dumps({'error': 'Device is busy'}))
+                    raise DenyConnection("Device is already in use")
+                
+                # Register the new connection
+                active_device_connections[self.device_id] = self.channel_name
+
                 await self.accept()
                 await self.send(text_data=json.dumps({'status': 'connected', 'user': str(self.user), 'role': self.role}))
 
@@ -40,7 +52,6 @@ class VitalDataConsumer(AsyncWebsocketConsumer):
                 for subject, group_prefix in subject_group_mapping.items():
                     group_name = f"{group_prefix}{self.device_id}"
                     await self.channel_layer.group_add(group_name, self.channel_name)
-                    # await self.send(text_data=json.dumps({'status': f'Joined group {group_name}'}))
 
                 # Set up the MQTT client with the dynamic device_id
                 self.mqtt_client = setup_mqtt_client(self.device_id)
@@ -50,10 +61,20 @@ class VitalDataConsumer(AsyncWebsocketConsumer):
             await self.close()
 
     async def disconnect(self, close_code):
-     if self.device_id:
-        for subject, group_prefix in subject_group_mapping.items():
-            group_name = f"{group_prefix}{self.device_id}"
-            await self.channel_layer.group_discard(group_name, self.channel_name)
+        if self.device_id:
+            # Remove the connection from the active connections
+            if self.device_id in active_device_connections:
+                del active_device_connections[self.device_id]
+
+            # Save the current vitals to the VitalHistory model
+            await self.save_vitals_to_history()
+
+            # Remove the consumer from all groups
+            for subject, group_prefix in subject_group_mapping.items():
+                group_name = f"{group_prefix}{self.device_id}"
+                await self.channel_layer.group_discard(group_name, self.channel_name)
+
+
 
 
     async def receive(self, text_data):
@@ -190,6 +211,31 @@ class VitalDataConsumer(AsyncWebsocketConsumer):
                 patient_data.heart_rate = Decimal(heart_rate)
                 patient_data.spo2 = Decimal(spo2)
                 patient_data.save()
+    @sync_to_async
+    def save_vitals_to_history(self):
+        """Save the current vitals to VitalHistory before disconnecting."""
+        if self.role == 'doctor':
+            doctor_profile = self.user.doctorprofile
+            doctor_data = DoctorData.objects.filter(doctor=doctor_profile).latest('created_at')
+            VitalHistoryDoctor.objects.create(
+                doctor=doctor_profile,
+                temperature=doctor_data.temperature,
+                glucose_level=doctor_data.glucose_level,
+                glucose_samples=doctor_data.glucose_samples,
+                heart_rate=doctor_data.heart_rate,
+                spo2=doctor_data.spo2,
+            )
+        elif self.role == 'patient':
+            patient_profile = self.user.patientprofile
+            patient_data = PatientData.objects.filter(patient=patient_profile).latest('created_at')
+            VitalHistoryPatient.objects.create(
+                patient=patient_profile,
+                temperature=patient_data.temperature,
+                glucose_level=patient_data.glucose_level,
+                glucose_samples=patient_data.glucose_samples,
+                heart_rate=patient_data.heart_rate,
+                spo2=patient_data.spo2,
+            )
 
 
     @sync_to_async
